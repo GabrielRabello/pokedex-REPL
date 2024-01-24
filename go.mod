@@ -4,4 +4,4 @@ module github.com/GabrielRabello/pokedex-REPL
 
 go 1.21.6
 
-require github.com/GabrielRabello/pokedex-REPL/dto v0.0.0-00010101000000-000000000000
+require github.com/GabrielRabello/pokedex-REPL/dto v0.0.0-20240124021817-0b7190f1c0e2
