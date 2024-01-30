@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	// "encoding/json"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/GabrielRabello/pokedex-REPL/dto"
@@ -13,74 +13,60 @@ import (
 	"strings"
 )
 
-type cliCommand struct {
+type ICommand interface {
+	Run() error
+}
+
+type Command struct {
 	name        string
 	description string
-	run         func(*config) error
+	run         func() error
 }
 
-type config struct {
-	offsetMul int
+func (c *Command) Run() error {
+	return c.run()
 }
 
-var locations []dto.Location
+type CommandBatch struct {
+	name        string
+	description string
+	run         func(*dto.BatchResult) error
+	result      dto.BatchResult
+}
+
+func (c *CommandBatch) Run() error {
+	return c.run(&c.result)
+}
 
 const cliName string = "Pokedex"
 const apiURL string = "https://pokeapi.co/api/v2/"
 const apiResource string = "location-area/"
 
-// func commands() func() map[string]cliCommand {
-// 	pg := config{offsetMul: 1}
-// 	return func() map[string]cliCommand {
-// 		return map[string]cliCommand{
-// 			"help": {
-// 				name:        "help",
-// 				description: "Displays a help message",
-// 				run:         commandHelp,
-// 			},
-// 			"exit": {
-// 				name:        "exit",
-// 				description: "Exit the Pokedex",
-// 				run:         commandExit,
-// 			},
-// 			"clear": {
-// 				name:        "clear",
-// 				description: "Clear the screen",
-// 				run:         commandClearScreen,
-// 			},
-// 			"map": {
-// 				name:        "map",
-// 				description: "Displays 20 locations per page",
-// 				run:         commandMap,
-// 			},
-// 		}
-// 	}
-// }
-
-var commands = map[string]cliCommand{
-	"help": {
+var commands = map[string]ICommand{
+	"help": &Command{
 		name:        "help",
 		description: "Displays a help message",
 		run:         commandHelp,
 	},
-	"exit": {
+	"exit": &Command{
 		name:        "exit",
 		description: "Exit the Pokedex",
 		run:         commandExit,
 	},
-	"clear": {
+	"clear": &Command{
 		name:        "clear",
 		description: "Clear the screen",
 		run:         commandClearScreen,
 	},
-	"map": {
+	"map": &CommandBatch{
 		name:        "map",
 		description: "Displays 20 locations per page",
 		run:         commandMap,
+		result:      dto.BatchResult{},
 	},
 }
 
-func commandHelp(_ *config) error {
+func commandHelp() error {
 	const str = "\n" +
 		"Welcome to the Pokedex!\n\n" +
 		"Usage:\n" +
@@ -91,28 +77,38 @@ func commandHelp(_ *config) error {
 	return err
 }
 
-func commandExit(_ *config) error {
+func commandExit() error {
 	fmt.Println("Bye!")
 	os.Exit(0)
 	return nil
 }
 
-func commandClearScreen(_ *config) error {
+func commandClearScreen() error {
 	cmd := exec.Command("clear")
 	cmd.Stdout = os.Stdout
 	return cmd.Run()
 }
 
-func commandMap(conf *config) error {
-	url := apiURL + apiResource + "?offset=" + fmt.Sprint(conf.offsetMul*20) + "&limit=20"
-	_, err := getRequest(url)
+func commandMap(conf *dto.BatchResult) error {
+	if conf.Next == nil {
+		s := apiURL + apiResource
+		conf.Next = &s
+	}
+	body, err := GET(*conf.Next)
 	if err != nil {
 		return err
 	}
-	return err
+	err = json.Unmarshal(body, &conf)
+	if err != nil {
+		return fmt.Errorf("error unmarshalling response body: %w", err)
+	}
+	for _, v := range conf.Results {
+		fmt.Println(v.Name)
+	}
+	return nil
 }
 
-func getRequest(url string) ([]byte, error) {
+func GET(url string) ([]byte, error) {
 	res, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("request error: %w", err)
@@ -125,7 +121,6 @@ func getRequest(url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
-
 	return body, nil
 }
 func printPrompt() {
@@ -138,16 +133,16 @@ func sanitizeInput(str string) string {
 	return str
 }
 
-func handleInput(scanner *bufio.Scanner) (cliCommand, error) {
+func handleInput(scanner *bufio.Scanner) (ICommand, error) {
 	scanner.Scan()
 	input := scanner.Text()
 	if err := scanner.Err(); err != nil {
-		return cliCommand{}, errors.New("Erro: " + err.Error())
+		return nil, errors.New("Erro: " + err.Error())
 	}
 	input = sanitizeInput(input)
 	val, ok := commands[input]
 	if !ok {
-		return cliCommand{}, errors.New("comando inválido")
+		return nil, errors.New("comando inválido")
 	}
 	return val, nil
 }
@@ -155,32 +150,16 @@ func handleInput(scanner *bufio.Scanner) (cliCommand, error) {
 func main() {
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Split(bufio.ScanLines)
-	conf := config{offsetMul: 1}
-	res, err := http.Get(apiURL + apiResource + "?offset=" + fmt.Sprint(conf.offsetMul*20) + "&limit=20")
-	if err != nil {
-		fmt.Print(err.Error())
+	for {
+		printPrompt()
+		command, err := handleInput(sc)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "\nErro: ", err)
+			continue
+		}
+		err = command.Run()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "\nErro: ", err)
+		}
 	}
-	body, err := io.ReadAll(res.Body)
-	res.Body.Close()
-	if res.StatusCode > 299 {
-		fmt.Printf("Response failed with status code: %d and\nbody: %s\n", res.StatusCode, body)
-	}
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	fmt.Printf("%s", body)
-
-	// for {
-	// 	printPrompt()
-	// 	command, err := handleInput(sc)
-	// 	if err != nil {
-	// 		fmt.Fprintln(os.Stderr, "\nErro: ", err)
-	// 		continue
-	// 	}
-	// 	err = command.run(&conf)
-	// 	if err != nil {
-	// 		fmt.Fprintln(os.Stderr, "\nErro: ", err)
-	// 	}
-	// }
 }
